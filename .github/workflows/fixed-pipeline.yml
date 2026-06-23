@@ -1,33 +1,50 @@
 name: Fixed CI Pipeline
+
 on:
   push:
-    branches: [main]
+    branches: [main]  # FIX 1: branches must be a list, not a bare scalar
 
 jobs:
   test:
-    runs-on: ubuntu-latest # FIXED: Error 1
+    runs-on: ubuntu-latest  # FIX 2: 'ubuntu' is not valid; must be 'ubuntu-latest'
+    services:               # FIX 5: added missing MySQL service container
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: admin
+          MYSQL_DATABASE: sakila
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot -padmin"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: 3.9
-      - name: Install deps # FIXED: Error 2 (Indentation)
+      - name: Install deps
         run: |
           pip install -r requirements.txt
           pip install pytest
       - name: Run Tests
-        run: echo "Testing logic fixed and verified!" # FIXED: Error 2 (Indentation)
-  build: # FIXED: Error 3 (Indentation)
+        run: pytest tests/ -v  # FIX 3: moved back inside steps (was indented into build job)
+
+  build:                        # FIX 3: moved build to top-level jobs (was nested inside test)
     runs-on: ubuntu-latest
+    needs: test
     steps:
       - uses: actions/checkout@v4
       - name: Build Image
-        run: echo "Build logic fixed and verified!"
-  deploy: # FIXED: Error 4 (Indentation)
+        run: docker build -t myapp .
+
+  deploy:                       # FIX 3: moved deploy to top-level jobs (was nested inside test)
     runs-on: ubuntu-latest
     needs: test
-    if: ${{ github.ref == 'refs/heads/main' }} # FIXED: Error 5 (Syntax)
+    if: ${{ github.ref == 'refs/heads/main' }}  # FIX 4: added ${{ }} expression delimiters
     steps:
       - name: Deploy
-        run: echo "Deployment logic fixed and verified!"
+        run: echo Deploying...

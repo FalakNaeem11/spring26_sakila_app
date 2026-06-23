@@ -1,0 +1,161 @@
+name: Deploy Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app.py"
+      - "config.py"
+      - "templates/**"
+      - "static/**"
+      - "Dockerfile"
+      - "requirements.txt"
+      - "docker-compose.yml"
+
+env:
+  IMAGE_NAME: sakila-app
+  PYTHON_VERSION: "3.9"
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build staging image
+        run: |
+          docker build \
+            -t ${{ env.IMAGE_NAME }}:staging-${{ github.sha }} \
+            -t ${{ env.IMAGE_NAME }}:staging \
+            .
+
+      - name: Simulate staging deployment
+        run: |
+          echo "=============================="
+          echo "  STAGING DEPLOYMENT SUMMARY  "
+          echo "=============================="
+          echo "Branch:     ${{ github.ref_name }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo "Triggered:  ${{ github.event_name }}"
+          echo "Actor:      ${{ github.actor }}"
+          echo "Image tag:  ${{ env.IMAGE_NAME }}:staging-${{ github.sha }}"
+          echo ""
+          echo "Starting staging container..."
+          docker run -d \
+            --name staging-app \
+            -p 5001:5000 \
+            -e MYSQL_HOST=staging-db \
+            -e MYSQL_USER=root \
+            -e MYSQL_PASSWORD=staging_pass \
+            -e MYSQL_DB=sakila \
+            -e SECRET_KEY=staging-secret \
+            ${{ env.IMAGE_NAME }}:staging
+          sleep 5
+          docker ps --filter name=staging-app
+          docker stop staging-app && docker rm staging-app
+          echo ""
+          echo "Staging deployment complete."
+
+      - name: Write Job Summary
+        run: |
+          echo "## 🚀 Staging Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Actor** | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | \`${{ env.IMAGE_NAME }}:staging-${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | ✅ Deployed to Staging |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Changes in this deployment" >> $GITHUB_STEP_SUMMARY
+          git log -5 --oneline >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify — staging complete
+        run: |
+          echo "[Slack notification] Deployment to STAGING successful."
+          echo "Commit: ${{ github.sha }} by ${{ github.actor }}"
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build production image
+        run: |
+          docker build \
+            -t ${{ env.IMAGE_NAME }}:prod-${{ github.sha }} \
+            -t ${{ env.IMAGE_NAME }}:latest \
+            .
+
+      - name: Simulate production deployment
+        run: |
+          echo "==============================="
+          echo " PRODUCTION DEPLOYMENT STARTED "
+          echo "==============================="
+          echo "Image: ${{ env.IMAGE_NAME }}:prod-${{ github.sha }}"
+          echo "Deploying to production environment..."
+          echo ""
+          echo "Running health checks..."
+          docker run --rm \
+            -e MYSQL_HOST=prod-db \
+            -e MYSQL_USER=root \
+            -e MYSQL_PASSWORD=prod_pass \
+            -e MYSQL_DB=sakila \
+            -e SECRET_KEY=prod-secret \
+            ${{ env.IMAGE_NAME }}:latest \
+            python -c "import flask; print('Flask OK:', flask.__version__)"
+          echo ""
+          echo "Production deployment complete."
+
+      - name: Generate version tag from date
+        id: version
+        run: |
+          VERSION="v$(date +'%Y.%m.%d')"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Generated version tag: $VERSION"
+
+      - name: Create GitHub Release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = "${{ steps.version.outputs.version }}";
+            const sha = "${{ github.sha }}";
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: version,
+              name: `Release ${version}`,
+              body: [
+                `## Production Release ${version}`,
+                ``,
+                `**Commit:** \`${sha}\``,
+                `**Deployed by:** ${{ github.actor }}`,
+                `**Date:** ${new Date().toISOString()}`,
+                ``,
+                `### Changes`,
+                `Automated production release from CI/CD pipeline.`,
+              ].join('\n'),
+              draft: false,
+              prerelease: false,
+            });
+            console.log(`Release ${version} created successfully`);
+
+      - name: Notify — production complete
+        run: |
+          echo "[Slack notification] Deployment to PRODUCTION successful."
+          echo "Version: ${{ steps.version.outputs.version }}"
+          echo "Commit: ${{ github.sha }} by ${{ github.actor }}"
